@@ -1,462 +1,278 @@
+import requests
+import time
+from flask import Flask, render_template_string, request, jsonify, Response, session, redirect, url_for
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)
+app.secret_key = 'yaya_ultimate_fix_2026'
+
+# --- CONFIG (ثابتة لضمان الوصول) ---
+HOST = "http://cf.aakj.me"
+USER = "54dbae545a8f"
+PASS = "59d6646427"
+# تم تحديث الـ User-Agent ليكون مطابقاً للمتصفحات الحديثة لتجنب الحظر
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+
+cache = {}
+
+def get_data(action, cat_id='', sid=''):
+    key = f"{action}_{cat_id}_{sid}"
+    if key in cache and (time.time() - cache[key]['time']) < 900:
+        return cache[key]['data']
+    url = f"{HOST}/player_api.php?username={USER}&password={PASS}&action={action}&category_id={cat_id}&series_id={sid}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15).json()
+        cache[key] = {'data': r, 'time': time.time()}
+        return r
+    except: return []
+
+# ================= LOGIN UI =================
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In</title>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; background: #000; font-family: sans-serif; }
+        .bg { position: fixed; inset: 0; z-index: -1; filter: brightness(0.3) blur(5px); background: url('https://assets.nflxext.com/ffe/siteui/vlv3/f841d4c7-10e1-40af-bcae-07a3f8dc141a/f6d7434e-d6de-4185-a6d4-c77a2d08737b/US-en-20220502-popsignuptwoweeks-perspective_alpha_website_medium.jpg') center/cover; }
+        .container { display: flex; align-items: center; justify-content: center; height: 100vh; }
+        .card { background: rgba(0,0,0,0.85); padding: 60px; border-radius: 8px; width: 100%; max-width: 450px; box-shadow: 0 10px 30px #000; }
+        h1 { color: #fff; font-size: 32px; margin-bottom: 30px; }
+        input { width: 100%; padding: 16px; margin-bottom: 20px; border-radius: 4px; border: none; background: #333; color: #fff; font-size: 16px; outline: none; box-sizing: border-box; }
+        button { width: 100%; padding: 16px; background: #E50914; color: #fff; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 16px; }
+    </style>
+</head>
+<body>
+    <div class="bg"></div>
+    <div class="container"><div class="card"><h1>Sign In</h1><form method="POST"><input type="password" name="code" placeholder="Password" required autofocus><button type="submit">Sign In</button></form></div></div>
+</body>
+</html>
+"""
+
+# ================= MAIN UI (NETFLIX CLONE) =================
+APP_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IPTV Player</title>
-    <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>YAYA TV</title>
+    <script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        body {
-            background-color: #f8f9fa;
+        :root { --accent: #E50914; --bg: #141414; --sidebar-w: 240px; }
+        * { box-sizing: border-box; }
+        body { background: var(--bg); color: #fff; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+
+        .sidebar { width: var(--sidebar-w); background: #000; display: flex; flex-direction: column; z-index: 1000; border-right: 1px solid #111; }
+        .sidebar-brand { padding: 30px 0; font-size: 32px; font-weight: 900; color: var(--accent); text-align: center; }
+        .nav-link { padding: 15px 30px; font-size: 16px; font-weight: 600; color: #888; cursor: pointer; transition: 0.3s; }
+        .nav-link.active { color: #fff; background: #333; border-left: 5px solid var(--accent); }
+        .cat-list { flex: 1; overflow-y: auto; padding: 20px 10px; scrollbar-width: none; }
+        .cat-item { padding: 10px 20px; border-radius: 4px; cursor: pointer; color: #777; font-size: 13px; margin-bottom: 2px; }
+        .cat-item.active { color: #fff; background: #222; }
+
+        .main { flex: 1; display: flex; flex-direction: column; position: relative; overflow-y: auto; }
+        .top-bar { height: 70px; display: flex; align-items: center; padding: 0 40px; background: rgba(0,0,0,0.5); position: sticky; top: 0; z-index: 500; }
+        .search-box { position: relative; width: 300px; }
+        .search-box i { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: #888; }
+        .search-inp { width: 100%; background: rgba(0,0,0,0.7); border: 1px solid #444; color: #fff; padding: 10px 10px 10px 45px; border-radius: 4px; outline: none; }
+
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 15px; padding: 20px 40px 40px; }
+        .card { position: relative; aspect-ratio: 2/3; background: #222; border-radius: 4px; overflow: hidden; cursor: pointer; transition: 0.3s; }
+        .card:hover { transform: scale(1.08); z-index: 100; box-shadow: 0 10px 30px #000; }
+        .card img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: 0.5s; }
+        .card img.loaded { opacity: 1; }
+        .card-name { position: absolute; bottom: 0; width: 100%; background: rgba(0,0,0,0.8); padding: 10px; font-size: 11px; text-align: center; }
+
+        #seriesPanel { position: fixed; right: 0; top: 0; width: 400px; height: 100%; background: #000; z-index: 2000; transform: translateX(100%); transition: 0.4s cubic-bezier(0.4, 0, 0.2, 1); border-left: 1px solid #222; }
+        #seriesPanel.open { transform: translateX(0); }
+        .ep-list { height: calc(100% - 80px); overflow-y: auto; padding: 20px; }
+        .ep-item { padding: 15px; background: #111; border-radius: 4px; margin-bottom: 10px; cursor: pointer; border: 1px solid #222; display: flex; gap: 15px; align-items: center; }
+
+        @media (max-width: 768px) {
+            .sidebar { width: 0; display: none; }
+            .grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); padding: 10px; }
+            #seriesPanel { width: 100%; }
         }
-        .navbar {
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-        #video-player {
-            width: 100%;
-            height: 300px;
-            background: #000;
-        }
-        .category-card, .channel-card {
-            cursor: pointer;
-            margin: 5px 0;
-            transition: transform 0.2s;
-        }
-        .category-card:hover, .channel-card:hover {
-            transform: translateY(-2px);
-        }
-        .channel-logo {
-            height: 50px;
-            width: 50px;
-            object-fit: contain;
-            margin-right: 10px;
-        }
-        .epg-entry {
-            padding: 10px;
-            border-bottom: 1px solid #ddd;
-        }
-        #back-to-categories {
-            display: none;
-            margin-bottom: 15px;
-        }
-        .spinner-border {
-            width: 3rem;
-            height: 3rem;
-        }
-        .toast {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 9999;
-        }
-        .dark-mode {
-            background-color: #121212;
-            color: #ffffff;
-        }
-        .dark-mode .navbar {
-            background-color: #1f1f1f !important;
-        }
-        .dark-mode .card {
-            background-color: #1f1f1f;
-            color: #ffffff;
-        }
-        .dark-mode .modal-content {
-            background-color: #1f1f1f;
-            color: #ffffff;
-        }
+
+        #playerOverlay { display: none; position: fixed; inset: 0; background: #000; z-index: 9999; }
+        .close-player { position: absolute; top: 30px; right: 30px; font-size: 40px; color: #fff; cursor: pointer; z-index: 10001; }
+        #loader { position: fixed; inset: 0; background: #000; display: flex; align-items: center; justify-content: center; z-index: 5000; }
+        .spinner { width: 40px; height: 40px; border: 3px solid #111; border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
-    <!-- Navbar -->
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="#">IPTV Player</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <button class="btn btn-outline-light" onclick="toggleDarkMode()">Toggle Dark Mode</button>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
+    <div id="loader"><div class="spinner"></div></div>
 
-    <!-- Main Content -->
-    <div class="container mt-4">
-        <div id="login-section">
-            <div class="row justify-content-center">
-                <div class="col-md-6">
-                    <div class="card shadow">
-                        <div class="card-body">
-                            <h5 class="card-title text-center mb-4">Login</h5>
-                            <div class="mb-3">
-                                <input type="text" id="m3u-url" class="form-control" placeholder="M3U URL (e.g., http://example.com:8080/get.php?username=user&password=pass&type=m3u_plus)" required>
-                            </div>
-                            <button class="btn btn-primary w-100 mb-3" onclick="parseM3UUrl()">Login with M3U URL</button>
-                            <hr>
-                            <div class="mb-3">
-                                <input type="text" id="server" class="form-control" placeholder="Server URL (e.g., http://example.com:8080)" required>
-                            </div>
-                            <div class="mb-3">
-                                <input type="text" id="username" class="form-control" placeholder="Username" required>
-                            </div>
-                            <div class="mb-3">
-                                <input type="password" id="password" class="form-control" placeholder="Password" required>
-                            </div>
-                            <button class="btn btn-primary w-100" onclick="login()">Login</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div id="main-section" class="d-none">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <button id="back-to-categories" class="btn btn-secondary" onclick="showCategories()">
-                    ← Back to Categories
-                </button>
-                <button id="logout-btn" class="btn btn-danger" onclick="logout()">Logout</button>
-            </div>
-            
-            <div id="categories-section">
-                <div class="row" id="categories"></div>
-            </div>
-            
-            <div id="channels-section" class="d-none">
-                <div class="row" id="channels"></div>
-            </div>
-        </div>
+    <div class="sidebar">
+        <div class="sidebar-brand">YAYA</div>
+        <div class="nav-link active" onclick="setMode('movie', this)">MOVIES</div>
+        <div class="nav-link" onclick="setMode('series', this)">SERIES</div>
+        <div class="cat-list" id="catList"></div>
     </div>
 
-    <!-- Modal for Video Player and EPG -->
-    <div class="modal fade" id="videoModal" tabindex="-1" aria-labelledby="videoModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="videoModalLabel">Channel</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <video id="video-player" controls></video>
-                    <div class="mt-3">
-                        <h6>EPG (Electronic Program Guide)</h6>
-                        <div id="epg"></div>
-                    </div>
-                </div>
+    <div class="main">
+        <div class="top-bar">
+            <div class="search-box">
+                <i class="fas fa-search"></i>
+                <input type="text" class="search-inp" placeholder="Search..." onkeyup="doSearch(this.value)">
             </div>
         </div>
+        <div class="grid" id="mainGrid"></div>
     </div>
 
-    <!-- Loading Spinner -->
-    <div id="loading-spinner" class="d-none text-center mt-5">
-        <div class="spinner-border text-primary" role="status">
-            <span class="visually-hidden">Loading...</span>
+    <div id="seriesPanel">
+        <div style="padding:25px; border-bottom:1px solid #222; display:flex; justify-content:space-between; align-items:center;">
+            <h3 id="panelTitle" style="margin:0;">Episodes</h3>
+            <div onclick="togglePanel(false)" style="cursor:pointer; font-size:30px;">&times;</div>
         </div>
+        <div class="ep-list" id="epList"></div>
     </div>
 
-    <!-- Error Toast -->
-    <div id="error-toast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
-        <div class="toast-header">
-            <strong class="me-auto">Error</strong>
-            <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
-        </div>
-        <div class="toast-body" id="error-message"></div>
+    <div id="playerOverlay">
+        <div class="close-player" onclick="closePlayer()">&times;</div>
+        <div id="artPlayer" style="width:100%; height:100%;"></div>
     </div>
 
-    <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <!-- hls.js for HLS stream compatibility -->
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script>
-        const m3uUrlInput = document.getElementById('m3u-url');
-        const serverInput = document.getElementById('server');
-        const usernameInput = document.getElementById('username');
-        const passwordInput = document.getElementById('password');
-        const categoriesDiv = document.getElementById('categories');
-        const channelsDiv = document.getElementById('channels');
-        const epgDiv = document.getElementById('epg');
-        const videoPlayer = document.getElementById('video-player');
-        const loginSection = document.getElementById('login-section');
-        const mainSection = document.getElementById('main-section');
-        const videoModal = new bootstrap.Modal(document.getElementById('videoModal'));
-        const categoriesSection = document.getElementById('categories-section');
-        const channelsSection = document.getElementById('channels-section');
-        const backButton = document.getElementById('back-to-categories');
-        const logoutBtn = document.getElementById('logout-btn');
-        const loadingSpinner = document.getElementById('loading-spinner');
-        const errorToast = new bootstrap.Toast(document.getElementById('error-toast'));
+        let mode = 'movie', currentData = [], art = null;
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(e => { if(e.isIntersecting) { e.target.src = e.target.dataset.src; e.target.onload = () => e.target.classList.add('loaded'); observer.unobserve(e.target); }});
+        });
 
-        let baseUrl = '';
-        let username = '';
-        let password = '';
-        let currentHls = null;
+        setMode('movie', document.querySelector('.nav-link'));
 
-        // Function to show loading spinner
-        function showLoading() {
-            loadingSpinner.classList.remove('d-none');
+        async function setMode(m, btn) {
+            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+            btn.classList.add('active');
+            mode = m;
+            showLoader(true);
+            const res = await fetch(`/api?action=${m === 'movie' ? 'get_vod_categories' : 'get_series_categories'}`);
+            const cats = await res.json();
+            const list = document.getElementById('catList');
+            list.innerHTML = `<div class="cat-item active" onclick="loadContent('', this)">All Categories</div>`;
+            cats.forEach(c => { list.innerHTML += `<div class="cat-item" onclick="loadContent('${c.category_id}', this)">${c.category_name}</div>`; });
+            loadContent('', document.querySelector('.cat-item'));
         }
 
-        // Function to hide loading spinner
-        function hideLoading() {
-            loadingSpinner.classList.add('d-none');
+        async function loadContent(cid, btn) {
+            if(btn) { document.querySelectorAll('.cat-item').forEach(l => l.classList.remove('active')); btn.classList.add('active'); }
+            showLoader(true);
+            const res = await fetch(`/api?action=${mode === 'movie' ? 'get_vod_streams' : 'get_series'}&category_id=${cid}`);
+            currentData = await res.json();
+            render(currentData);
+            showLoader(false);
         }
 
-        // Function to show error toast
-        function showError(message) {
-            document.getElementById('error-message').innerText = message;
-            errorToast.show();
-        }
-
-        // Function to toggle dark mode
-        function toggleDarkMode() {
-            document.body.classList.toggle('dark-mode');
-        }
-
-        // Function to parse M3U URL and extract credentials
-        function parseM3UUrl() {
-            const m3uUrl = m3uUrlInput.value;
-            if (!m3uUrl) {
-                showError('Please enter an M3U URL.');
-                return;
-            }
-
-            try {
-                const url = new URL(m3uUrl);
-                const server = `${url.protocol}//${url.host}`;
-                const username = url.searchParams.get('username');
-                const password = url.searchParams.get('password');
-
-                if (!server || !username || !password) {
-                    throw new Error('Invalid M3U URL. Missing server, username, or password.');
-                }
-
-                // Set credentials in the form
-                serverInput.value = server;
-                usernameInput.value = username;
-                passwordInput.value = password;
-
-                // Automatically log in
-                login();
-            } catch (error) {
-                console.error('Error parsing M3U URL:', error);
-                showError('Invalid M3U URL. Please check the format.');
-            }
-        }
-
-        // Function to handle login
-        async function login() {
-            const server = serverInput.value;
-            username = usernameInput.value;
-            password = passwordInput.value;
-
-            if (!server || !username || !password) {
-                showError('Please fill in all fields.');
-                return;
-            }
-
-            baseUrl = `${server}/player_api.php?username=${username}&password=${password}`;
-
-            showLoading();
-            try {
-                const response = await fetchWithProxy(`${baseUrl}&action=get_live_categories`);
-                const categories = await response.json();
-                if (categories && categories.length > 0) {
-                    // Save credentials to local storage
-                    localStorage.setItem('iptvCredentials', JSON.stringify({ server, username, password }));
-                    loginSection.classList.add('d-none');
-                    mainSection.classList.remove('d-none');
-                    logoutBtn.style.display = 'block';
-                    displayCategories(categories);
-                } else {
-                    throw new Error('No categories found.');
-                }
-            } catch (error) {
-                console.error('Error fetching categories:', error);
-                showError('Failed to fetch categories. Check your credentials.');
-            } finally {
-                hideLoading();
-            }
-        }
-
-        // Function to handle logout
-        function logout() {
-            localStorage.removeItem('iptvCredentials');
-            loginSection.classList.remove('d-none');
-            mainSection.classList.add('d-none');
-            logoutBtn.style.display = 'none';
-            serverInput.value = '';
-            usernameInput.value = '';
-            passwordInput.value = '';
-        }
-
-        // Function to display categories
-        function displayCategories(categories) {
-            categoriesDiv.innerHTML = categories.map(cat => `
-                <div class="col-md-4">
-                    <div class="card category-card p-2" onclick="loadChannels('${cat.category_id}', '${cat.category_name}')">
-                        <div class="card-body">
-                            <h5 class="card-title">${cat.category_name}</h5>
-                        </div>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        // Function to load channels for a category
-        async function loadChannels(categoryId, categoryName) {
-            showLoading();
-            try {
-                const response = await fetchWithProxy(`${baseUrl}&action=get_live_streams&category_id=${categoryId}`);
-                const channels = await response.json();
-                if (channels && channels.length > 0) {
-                    categoriesSection.classList.add('d-none');
-                    channelsSection.classList.remove('d-none');
-                    backButton.style.display = 'block';
-                    displayChannels(channels, categoryName);
-                } else {
-                    throw new Error('No channels found.');
-                }
-            } catch (error) {
-                console.error('Error fetching channels:', error);
-                showError('Failed to fetch channels.');
-            } finally {
-                hideLoading();
-            }
-        }
-
-        // Function to show categories
-        function showCategories() {
-            categoriesSection.classList.remove('d-none');
-            channelsSection.classList.add('d-none');
-            backButton.style.display = 'none';
-        }
-
-        // Function to display channels with logos
-        function displayChannels(channels, categoryName) {
-            channelsDiv.innerHTML = channels.map(ch => `
-                <div class="col-md-6">
-                    <div class="card channel-card p-2" onclick="playStream('${ch.stream_id}', '${ch.name}')">
-                        <div class="card-body d-flex align-items-center">
-                            <img src="${ch.stream_icon }" 
-                                 class="channel-logo" 
-                                 alt="${ch.name} logo"
-                                 onerror="this.src=''">
-                            <div>
-                                <h5 class="card-title mb-0">${ch.name}</h5>
-                                <small class="text-muted">${categoryName}</small>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        // Function to play a stream and show EPG in modal
-        async function playStream(streamId, channelName) {
-            // Clean up previous HLS instance
-            if (currentHls) {
-                currentHls.destroy();
-            }
-
-            const serverUrl = baseUrl.split('/player_api.php')[0];
-            const streamUrl = `${serverUrl}/live/${username}/${password}/${streamId}.m3u8`;
-
-            if (Hls.isSupported()) {
-                currentHls = new Hls();
-                currentHls.loadSource(streamUrl);
-                currentHls.attachMedia(videoPlayer);
-                currentHls.on(Hls.Events.MANIFEST_PARSED, () => {
-                    videoPlayer.play();
-                });
-            } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
-                videoPlayer.src = streamUrl;
-                videoPlayer.play();
-            }
-
-            // Handle modal close event
-            videoModal._element.addEventListener('hidden.bs.modal', () => {
-                videoPlayer.pause();
-                if (currentHls) {
-                    currentHls.destroy();
-                    currentHls = null;
-                }
+        function render(data) {
+            const grid = document.getElementById('mainGrid'); grid.innerHTML = '';
+            data.slice(0, 200).forEach(item => {
+                const d = document.createElement('div');
+                d.className = 'card';
+                d.innerHTML = `<img data-src="${item.stream_icon || item.cover || ''}"><div class="card-name">${item.name || item.title}</div>`;
+                d.onclick = () => mode === 'series' ? openSeries(item) : play(item);
+                grid.appendChild(d);
+                observer.observe(d.querySelector('img'));
             });
-
-            // Load EPG for the selected channel
-            await loadEPG(streamId);
-
-            // Set modal title to channel name
-            document.getElementById('videoModalLabel').innerText = channelName;
-
-            // Show the modal
-            videoModal.show();
         }
 
-        // Function to load EPG for a channel
-        async function loadEPG(streamId) {
-            try {
-                const response = await fetchWithProxy(`${baseUrl}&action=get_short_epg&stream_id=${streamId}&limit=5`);
-                const data = await response.json();
-                if (data.epg_listings && data.epg_listings.length > 0) {
-                    displayEPG(data.epg_listings);
-                } else {
-                    throw new Error('No EPG data found.');
-                }
-            } catch (error) {
-                console.error('Error fetching EPG:', error);
-                epgDiv.innerHTML = '<div class="text-muted">No EPG data available.</div>';
+        async function openSeries(item) {
+            togglePanel(true);
+            document.getElementById('panelTitle').innerText = item.name || item.title;
+            const epList = document.getElementById('epList');
+            epList.innerHTML = '<p style="text-align:center;">Loading...</p>';
+            const res = await fetch(`/api?action=get_series_info&series_id=${item.series_id}`);
+            const data = await res.json();
+            epList.innerHTML = '';
+            for(let s in data.episodes) {
+                data.episodes[s].forEach(ep => {
+                    const div = document.createElement('div');
+                    div.className = 'ep-item';
+                    div.innerHTML = `<b style="color:var(--accent)">E${ep.episode_num}</b> <span>S${s} - ${ep.title}</span>`;
+                    div.onclick = () => play(ep, 'series');
+                    epList.appendChild(div);
+                });
             }
         }
 
-        // Function to display EPG
-        function displayEPG(epgListings) {
-            epgDiv.innerHTML = epgListings.map(entry => {
-                // Decode Base64-encoded title and description
-                const title = atob(entry.title);
-                const description = atob(entry.description);
-
-                // Format start and end times
-                const startTime = new Date(entry.start).toLocaleTimeString();
-                const endTime = new Date(entry.end).toLocaleTimeString();
-
-                return `
-                    <div class="epg-entry">
-                        <strong>${title}</strong><br>
-                        <small>${startTime} - ${endTime}</small><br>
-                        <p class="mb-0">${description}</p>
-                    </div>
-                `;
-            }).join('');
+        function play(item, overrideMode) {
+            document.getElementById('playerOverlay').style.display = 'block';
+            let m = overrideMode || mode;
+            let url = `http://cf.aakj.me/${m}/54dbae545a8f/59d6646427/${item.stream_id || item.id}.${item.container_extension||'mp4'}`;
+            let finalUrl = `/stream_final?url=${encodeURIComponent(url)}`;
+            if(art) art.destroy();
+            art = new Artplayer({
+                container: '#artPlayer', url: finalUrl, autoplay: true, fullscreen: true, autoOrientation: true,
+                playbackRate: true, aspectRatio: true, hotkey: true, pip: true, setting: true,
+            });
         }
 
-        // Function to fetch data with a CORS proxy
-        async function fetchWithProxy(url) {
-            const proxyUrl = 'https://cors-anywhere.herokuapp.com/'; // Use a CORS proxy
-            const response = await fetch(proxyUrl + url);
-            if (!response.ok) {
-                throw new Error('Network response was not ok.');
-            }
-            return response;
-        }
-
-        // Check login status on page load
-        function checkLogin() {
-            const savedCredentials = localStorage.getItem('iptvCredentials');
-            if (savedCredentials) {
-                const { server, username, password } = JSON.parse(savedCredentials);
-                serverInput.value = server;
-                usernameInput.value = username;
-                passwordInput.value = password;
-                login();
-            }
-        }
-
-        // Check login status on page load
-        checkLogin();
+        function doSearch(v) { render(currentData.filter(i => (i.name||i.title||"").toLowerCase().includes(v.toLowerCase()))); }
+        function togglePanel(v) { document.getElementById('seriesPanel').classList.toggle('open', v); }
+        function closePlayer() { document.getElementById('playerOverlay').style.display='none'; if(art){art.pause(); art.destroy(); art=null;} if(document.fullscreenElement) document.exitFullscreen(); }
+        function showLoader(v) { document.getElementById('loader').style.display = v ? 'flex' : 'none'; }
     </script>
 </body>
 </html>
+"""
+
+# ================= BACKEND (THE FIX) =================
+@app.route('/', methods=['GET', 'POST'])
+def home():
+    if request.method == 'POST':
+        if request.form.get('code','').lower() == 'yaya':
+            session['auth'] = True
+            return redirect(url_for('home'))
+    return render_template_string(LOGIN_HTML) if not session.get('auth') else render_template_string(APP_HTML)
+
+@app.route('/api')
+def api():
+    if not session.get('auth'): return jsonify([])
+    action = request.args.get('action')
+    url = f"{HOST}/player_api.php?username={USER}&password={PASS}&action={action}&category_id={request.args.get('category_id','')}&series_id={request.args.get('series_id','')}"
+    return jsonify(requests.get(url, headers=HEADERS).json())
+
+@app.route('/stream_final')
+def stream_final():
+    """
+    هذه الدالة هي الحل الجذري لمشكلة توقف البث.
+    تقوم بتمرير طلبات الـ Range بشكل صحيح وتستخدم الترويسات (Headers) الأصلية للسيرفر.
+    """
+    if not session.get('auth'): return "Unauthorized", 401
+    url = request.args.get('url')
+    
+    # استخراج الـ Range Header من المتصفح (مهم جداً للتقديم)
+    range_header = request.headers.get('Range', None)
+    
+    headers = HEADERS.copy()
+    if range_header:
+        headers['Range'] = range_header
+    
+    try:
+        # طلب البيانات من سيرفر الـ IPTV مع تمرير الـ Range
+        r = requests.get(url, headers=headers, stream=True, timeout=20)
+        
+        # تجميع الهيدرز اللي المتصفح بيحتاجها عشان يشغل الفيديو
+        excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+        resp_headers = [(name, value) for (name, value) in r.raw.headers.items()
+                        if name.lower() not in excluded_headers]
+        
+        # إضافة الهيدرز الضرورية يدوياً لضمان الاستقرار
+        resp_headers.append(('Content-Length', r.headers.get('Content-Length')))
+        resp_headers.append(('Accept-Ranges', 'bytes'))
+        
+        return Response(r.iter_content(chunk_size=128*1024), 
+                        status=r.status_code, 
+                        headers=resp_headers,
+                        direct_passthrough=True)
+    except Exception as e:
+        print(f"Streaming Error: {e}")
+        return "Stream Error", 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, threaded=True)
